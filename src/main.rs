@@ -1,7 +1,12 @@
 #![allow(unused_imports)]
+use std::io::Read;
 use std::io::Write;
-use std::net::TcpStream;
 use std::net::TcpListener;
+use std::net::TcpStream;
+
+use bytes::BufMut;
+use bytes::Bytes;
+use bytes::BytesMut;
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -11,9 +16,9 @@ fn main() {
 
     for stream in listener.incoming() {
         match stream {
-            Ok(_stream) => {
+            Ok(stream) => {
                 println!("accepted new connection");
-                handle_connection(_stream);
+                handle_connection(stream);
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -23,24 +28,55 @@ fn main() {
 }
 
 pub fn handle_connection(mut stream: TcpStream) {
-    let response: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 7];
-    let _ = stream.write(&response);
+    let mut buf = [0; 512];
+    match stream.read(&mut buf[..]) {
+        Ok(n) => println!("Read {n} bytes."),
+        Err(err) => println!("Error reading stream: {}", err),
+    }
+    let buf = BytesMut::from(&buf[..]);
+    let request = KRequest::parse(buf.freeze());
+    let response = KResponse::new(request.size, request.correlation_id);
+    let _ = stream.write(&response.compact());
 }
 
 #[derive(Debug)]
-pub struct KResponse {
-    message_size: i32,
-    header: Header,
+struct KRequest {
+    size: Bytes,
+    _api_key: Bytes,
+    _api_version: Bytes,
+    correlation_id: Bytes,
 }
 
-impl KResponse {
-    pub fn new() -> Self {
-        let header = Header { correlation_id: 7 };
-        Self { message_size: 0, header }
+impl KRequest {
+    pub fn parse(buf: Bytes) -> KRequest {
+        let size = buf.slice(..4);
+        let api_key = buf.slice(4..6);
+        let api_version = buf.slice(6..8);
+        let correlation_id = buf.slice(8..12);
+        KRequest {
+            size,
+            _api_key: api_key,
+            _api_version: api_version,
+            correlation_id,
+        }
     }
 }
 
 #[derive(Debug)]
-struct Header {
-    correlation_id: i32
+pub struct KResponse {
+    msg_size: Bytes,
+    header: Bytes,
+}
+
+impl KResponse {
+    pub fn new(msg_size: Bytes, header: Bytes) -> Self {
+        Self { msg_size, header }
+    }
+
+    pub fn compact(self) -> Bytes {
+        let mut result = BytesMut::new();
+        result.put(self.msg_size);
+        result.put(self.header);
+        result.freeze()
+    }
 }
