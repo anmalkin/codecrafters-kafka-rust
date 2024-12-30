@@ -27,56 +27,94 @@ fn main() {
     }
 }
 
-pub fn handle_connection(mut stream: TcpStream) {
-    let mut buf = [0; 512];
+fn handle_connection(mut stream: TcpStream) {
+    let mut buf = BytesMut::zeroed(512);
     match stream.read(&mut buf[..]) {
         Ok(n) => println!("Read {n} bytes."),
         Err(err) => println!("Error reading stream: {}", err),
     }
-    let buf = BytesMut::from(&buf[..]);
-    let request = KRequest::parse(buf.freeze());
-    let response = KResponse::new(request.size, request.correlation_id);
-    let _ = stream.write(&response.compact());
+    let req = KRequest::parse(&buf.freeze());
+    let res = gen_res(&req);
+    let _ = stream.write(&res.as_be_bytes());
+}
+
+fn gen_res(req: &KRequest) -> KResponse {
+    match req.api_key {
+        18 => {
+            let msg_size = 0;
+            let correlation_id = req.correlation_id;
+            let err_code = match req.api_version {
+                0..=4 => 0,
+                _ => 35,
+            };
+            KResponse::new(msg_size, correlation_id, err_code)
+        }
+        key => panic!("API key {} not yet supported.", key),
+    }
+}
+
+fn be_bytes_to_i32(bytes: &[u8]) -> i32 {
+    if bytes.len() != std::mem::size_of::<i32>() {
+        panic!("Cannot convert {} bytes into an i32.", bytes.len());
+    }
+    let mut arr: [u8; 4] = [0; 4];
+    arr.copy_from_slice(bytes);
+    i32::from_be_bytes(arr)
+}
+
+fn be_bytes_to_i16(bytes: &[u8]) -> i16 {
+    if bytes.len() != std::mem::size_of::<i16>() {
+        panic!("Cannot convert {} bytes into an i16.", bytes.len());
+    }
+    let mut arr: [u8; 2] = [0; 2];
+    arr.copy_from_slice(bytes);
+    i16::from_be_bytes(arr)
 }
 
 #[derive(Debug)]
 struct KRequest {
-    size: Bytes,
-    _api_key: Bytes,
-    _api_version: Bytes,
-    correlation_id: Bytes,
+    msg_size: i32,
+    api_key: i16,
+    api_version: i16,
+    correlation_id: i32,
 }
 
 impl KRequest {
-    pub fn parse(buf: Bytes) -> KRequest {
-        let size = buf.slice(..4);
-        let api_key = buf.slice(4..6);
-        let api_version = buf.slice(6..8);
-        let correlation_id = buf.slice(8..12);
+    fn parse(buf: &[u8]) -> KRequest {
+        let msg_size = be_bytes_to_i32(&buf[..4]);
+        let api_key = be_bytes_to_i16(&buf[4..6]);
+        let api_version = be_bytes_to_i16(&buf[6..8]);
+        let correlation_id = be_bytes_to_i32(&buf[8..12]);
         KRequest {
-            size,
-            _api_key: api_key,
-            _api_version: api_version,
+            msg_size,
+            api_key,
+            api_version,
             correlation_id,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct KResponse {
-    msg_size: Bytes,
-    header: Bytes,
+struct KResponse {
+    msg_size: i32,
+    correlation_id: i32,
+    err_code: i16,
 }
 
 impl KResponse {
-    pub fn new(msg_size: Bytes, header: Bytes) -> Self {
-        Self { msg_size, header }
+    fn new(msg_size: i32, correlation_id: i32, err_code: i16) -> Self {
+        Self {
+            msg_size,
+            correlation_id,
+            err_code,
+        }
     }
 
-    pub fn compact(self) -> Bytes {
+    fn as_be_bytes(&self) -> Bytes {
         let mut result = BytesMut::new();
-        result.put(self.msg_size);
-        result.put(self.header);
+        result.put(self.msg_size.to_be_bytes().as_slice());
+        result.put(self.correlation_id.to_be_bytes().as_slice());
+        result.put(self.err_code.to_be_bytes().as_slice());
         result.freeze()
     }
 }
